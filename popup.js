@@ -212,4 +212,18 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     });
   }
+
+  // Open persistent Side Panel (Never closes when active tab is closed)
+  const openSidePanelBtn = document.getElementById('openSidePanelBtn');
+  if (openSidePanelBtn) {
+    openSidePanelBtn.addEventListener('click', async () => {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (chrome.sidePanel && tab && tab.windowId) {
+        await chrome.sidePanel.open({ windowId: tab.windowId });
+        window.close();
+      } else {
+        showToast('Side panel not supported in this window', true);
+      }
+    });
+  }
 });

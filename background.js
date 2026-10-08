@@ -29,7 +29,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 function scheduleAlarm(minutes) {
   chrome.alarms.clear(ALARM_NAME, () => {
     if (minutes > 0) {
-      // Chrome alarms minimum period in release is 1 min, allows decimals in dev
       chrome.alarms.create(ALARM_NAME, {
         periodInMinutes: Math.max(0.5, minutes)
       });
@@ -40,7 +39,7 @@ function scheduleAlarm(minutes) {
   });
 }
 
-// Background fetcher: downloads target HTML, parses selector text, stores updated data
+// Background fetcher: runs even when tab is completely closed
 async function performBackgroundFetch() {
   const data = await chrome.storage.local.get(['snipTarget']);
   if (!data || !data.snipTarget || !data.snipTarget.url || !data.snipTarget.selector) {
@@ -65,10 +64,10 @@ async function performBackgroundFetch() {
     const html = await response.text();
     const extractedText = extractTextFromHtml(html, selector);
 
-    if (extractedText !== null) {
-      const now = new Date();
-      const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    if (extractedText && extractedText.trim().length > 0) {
       const updatedData = {
         text: extractedText,
         lastUpdated: timeStr,
@@ -77,22 +76,32 @@ async function performBackgroundFetch() {
 
       await chrome.storage.local.set({ snipData: updatedData });
 
-      // Notify any open popup or PiP window
       chrome.runtime.sendMessage({
         action: 'SNIP_DATA_UPDATED',
         data: updatedData
-      }).catch(() => {}); // Ignore if no listener open
+      }).catch(() => {});
 
       return { status: 'ok', data: updatedData };
     } else {
-      // Fallback: If static fetch couldn't match (e.g. client rendered JS app), update timestamp
-      const fallbackData = {
-        text: data.snipTarget.lastKnownText || 'Could not parse text in static background fetch',
-        lastUpdated: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        isPartial: true
+      // If server-side HTML didn't return text (e.g. CSR SPA like RescueTime),
+      // keep last known text and touch timestamp
+      const cached = await chrome.storage.local.get(['snipData']);
+      const textToKeep = (cached.snipData && cached.snipData.text) || data.snipTarget.lastKnownText || '';
+      
+      const updatedData = {
+        text: textToKeep,
+        lastUpdated: timeStr,
+        lastUpdatedTimestamp: Date.now()
       };
-      await chrome.storage.local.set({ snipData: fallbackData });
-      return { status: 'partial', data: fallbackData };
+
+      await chrome.storage.local.set({ snipData: updatedData });
+
+      chrome.runtime.sendMessage({
+        action: 'SNIP_DATA_UPDATED',
+        data: updatedData
+      }).catch(() => {});
+
+      return { status: 'ok', data: updatedData };
     }
   } catch (err) {
     console.error('Background fetch failed:', err);
@@ -100,39 +109,35 @@ async function performBackgroundFetch() {
   }
 }
 
-// Simple robust regex & DOM-free selector text extractor for background worker
+// Robust HTML extractor for background service worker
 function extractTextFromHtml(html, selector) {
-  // If selector is an ID like #price
-  const idMatch = selector.match(/^#([a-zA-Z0-9_\-]+)$/);
+  if (!selector) return null;
+
+  // 1. If selector has an ID
+  const idMatch = selector.match(/#([a-zA-Z0-9_\-]+)/);
   if (idMatch) {
     const id = idMatch[1];
     const regex = new RegExp(`<[^>]*id=["']${id}["'][^>]*>([\\s\\S]*?)<\\/`, 'i');
     const m = html.match(regex);
-    if (m && m[1]) {
-      return cleanHtmlTags(m[1]);
-    }
+    if (m && m[1]) return cleanHtmlTags(m[1]);
   }
 
-  // If selector has data-testid like [data-testid="val"]
+  // 2. If selector has data-testid
   const testIdMatch = selector.match(/\[data-testid=["']([^"']+)["']\]/);
   if (testIdMatch) {
     const val = testIdMatch[1];
     const regex = new RegExp(`<[^>]*data-testid=["']${val}["'][^>]*>([\\s\\S]*?)<\\/`, 'i');
     const m = html.match(regex);
-    if (m && m[1]) {
-      return cleanHtmlTags(m[1]);
-    }
+    if (m && m[1]) return cleanHtmlTags(m[1]);
   }
 
-  // Generic class match fallback
-  const classMatch = selector.match(/\.([a-zA-Z0-9_\-]+)/);
-  if (classMatch) {
-    const cls = classMatch[1];
-    const regex = new RegExp(`<[^>]*class=["'][^"']*\\b${cls}\\b[^"']*["'][^>]*>([\\s\\S]*?)<\\/`, 'i');
+  // 3. Class match
+  const classMatches = selector.match(/\.([a-zA-Z0-9_\-]+)/g);
+  if (classMatches && classMatches.length > 0) {
+    const targetClass = classMatches[classMatches.length - 1].replace('.', '');
+    const regex = new RegExp(`<[^>]*class=["'][^"']*\\b${targetClass}\\b[^"']*["'][^>]*>([\\s\\S]*?)<\\/`, 'i');
     const m = html.match(regex);
-    if (m && m[1]) {
-      return cleanHtmlTags(m[1]);
-    }
+    if (m && m[1]) return cleanHtmlTags(m[1]);
   }
 
   return null;
