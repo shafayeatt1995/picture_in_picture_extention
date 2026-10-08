@@ -213,6 +213,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // Open Standalone Floating Window (Can reload tab in background without closing this window!)
+  const openWidgetWindowBtn = document.getElementById('openWidgetWindowBtn');
+  if (openWidgetWindowBtn) {
+    openWidgetWindowBtn.addEventListener('click', () => {
+      chrome.windows.create({
+        url: chrome.runtime.getURL('widget.html'),
+        type: 'popup',
+        width: 360,
+        height: 240,
+        focused: true
+      });
+      window.close();
+    });
+  }
+
   // Open persistent Side Panel (Never closes when active tab is closed)
   const openSidePanelBtn = document.getElementById('openSidePanelBtn');
   if (openSidePanelBtn) {

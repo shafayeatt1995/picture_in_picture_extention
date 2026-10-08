@@ -466,15 +466,32 @@
     }, 1000);
   }
 
-  function triggerPageRefresh(selector) {
-    sessionStorage.setItem('__webSnipPip_active', JSON.stringify({
-      selector: selector,
-      intervalMinutes: chosenRefreshIntervalMinutes,
-      pipMode: chosenPipMode
-    }));
+  // Seamless refresh: asks background service worker to fetch without CORS preflight
+  async function triggerPageRefresh(selector) {
+    try {
+      chrome.runtime.sendMessage({ action: 'RELOAD_TARGET_TAB_AND_SCRAPE' }, (res) => {
+        if (res && res.data && res.data.text) {
+          // If in Document PiP mode, update live text
+          if (pipWindow && !pipWindow.closed) {
+            const container = pipWindow.document.getElementById('__pip_container');
+            if (container) {
+              const currentEl = document.querySelector(selector);
+              if (currentEl) {
+                container.innerHTML = '';
+                container.appendChild(currentEl.cloneNode(true));
+              }
+            }
+          }
+        }
+      });
+    } catch (err) {
+      console.warn('In-place refresh error, keeping existing PiP open:', err);
+    }
 
-    window.location.reload();
+    // Schedule next refresh cycle
+    startRefreshTimer(selector);
   }
+
 
   function closePip() {
     if (document.pictureInPictureElement) {

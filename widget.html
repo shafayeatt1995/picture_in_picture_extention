@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Live Widget</title>
+  <link rel="stylesheet" href="widget.css">
+</head>
+<body>
+  <div class="widget-header">
+    <div class="brand">
+      <div class="pulse"></div>
+      <span class="domain" id="widgetDomain">Live Snip</span>
+    </div>
+    <div class="header-right">
+      <span class="time-tag" id="countdownTag">--:--</span>
+      <button id="widgetRefreshBtn" class="refresh-icon-btn" title="Refresh Now">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"></polyline>
+          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="widget-body">
+    <div id="widgetContent" class="content-box">
+      Loading content...
+    </div>
+  </div>
+
+  <div class="widget-footer">
+    <span id="widgetUpdatedTime">Updated: --</span>
+    <span class="always-top-badge">Always on Top</span>
+  </div>
+
+  <script src="widget.js"></script>
+</body>
+</html>

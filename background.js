@@ -5,10 +5,10 @@ chrome.runtime.onInstalled.addListener(() => {
   console.log('Web Snip PiP Extension Installed');
 });
 
-// Periodic background alarm listener
+// Periodic background alarm listener: reloads target tab safely without any CORS error
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === ALARM_NAME) {
-    await performBackgroundFetch();
+    await reloadTargetTabAndScrape();
   }
 });
 
@@ -18,13 +18,93 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const minutes = parseFloat(request.intervalMinutes);
     scheduleAlarm(minutes);
     sendResponse({ status: 'ok' });
-  } else if (request.action === 'MANUAL_REFRESH') {
-    performBackgroundFetch().then((result) => {
+  } else if (request.action === 'MANUAL_REFRESH' || request.action === 'RELOAD_TARGET_TAB_AND_SCRAPE') {
+    reloadTargetTabAndScrape().then((result) => {
       sendResponse(result);
     });
     return true; // async sendResponse
   }
 });
+
+// Actually reloads the website tab in background, waits for client JS to render, and scrapes fresh data!
+async function reloadTargetTabAndScrape() {
+  const store = await chrome.storage.local.get(['snipTarget']);
+  if (!store || !store.snipTarget || !store.snipTarget.url) {
+    return { status: 'error', message: 'No target URL' };
+  }
+
+  const { url, selector } = store.snipTarget;
+
+  // Find if tab is currently open
+  const tabs = await chrome.tabs.query({ url: url.split('#')[0] + '*' });
+  let targetTabId = null;
+
+  if (tabs.length > 0) {
+    targetTabId = tabs[0].id;
+    // Reload open tab
+    await chrome.tabs.reload(targetTabId);
+  } else {
+    // If user closed tab, create tab in background without focusing
+    const newTab = await chrome.tabs.create({ url: url, active: false });
+    targetTabId = newTab.id;
+  }
+
+  // Wait for page to load and SPA scripts (like RescueTime timer) to render
+  return new Promise((resolve) => {
+    const listener = (tabId, changeInfo) => {
+      if (tabId === targetTabId && changeInfo.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(listener);
+
+        // Give React/SPA 1.5s to calculate and display the live time
+        setTimeout(async () => {
+          try {
+            const results = await chrome.scripting.executeScript({
+              target: { tabId: targetTabId },
+              func: (sel) => {
+                const el = document.querySelector(sel);
+                return el ? (el.innerText || el.textContent || '').trim() : null;
+              },
+              args: [selector]
+            });
+
+            if (results && results[0] && results[0].result) {
+              const freshText = results[0].result;
+              const now = new Date();
+              const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+              const updatedData = {
+                text: freshText,
+                lastUpdated: timeStr,
+                lastUpdatedTimestamp: Date.now()
+              };
+
+              await chrome.storage.local.set({ snipData: updatedData });
+
+              chrome.runtime.sendMessage({
+                action: 'SNIP_DATA_UPDATED',
+                data: updatedData
+              }).catch(() => {});
+
+              resolve({ status: 'ok', data: updatedData });
+              return;
+            }
+          } catch (e) {
+            console.error('Script injection scrape error:', e);
+          }
+          resolve({ status: 'ok' });
+        }, 1500);
+      }
+    };
+
+    chrome.tabs.onUpdated.addListener(listener);
+
+    // Timeout safety after 15s
+    setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve({ status: 'timeout' });
+    }, 15000);
+  });
+}
 
 function scheduleAlarm(minutes) {
   chrome.alarms.clear(ALARM_NAME, () => {
@@ -39,121 +119,4 @@ function scheduleAlarm(minutes) {
   });
 }
 
-// Background fetcher: runs even when tab is completely closed
-async function performBackgroundFetch() {
-  const data = await chrome.storage.local.get(['snipTarget']);
-  if (!data || !data.snipTarget || !data.snipTarget.url || !data.snipTarget.selector) {
-    return { status: 'error', message: 'No section selected yet' };
-  }
 
-  const { url, selector } = data.snipTarget;
-
-  try {
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error ${response.status}`);
-    }
-
-    const html = await response.text();
-    const extractedText = extractTextFromHtml(html, selector);
-
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-    if (extractedText && extractedText.trim().length > 0) {
-      const updatedData = {
-        text: extractedText,
-        lastUpdated: timeStr,
-        lastUpdatedTimestamp: Date.now()
-      };
-
-      await chrome.storage.local.set({ snipData: updatedData });
-
-      chrome.runtime.sendMessage({
-        action: 'SNIP_DATA_UPDATED',
-        data: updatedData
-      }).catch(() => {});
-
-      return { status: 'ok', data: updatedData };
-    } else {
-      // If server-side HTML didn't return text (e.g. CSR SPA like RescueTime),
-      // keep last known text and touch timestamp
-      const cached = await chrome.storage.local.get(['snipData']);
-      const textToKeep = (cached.snipData && cached.snipData.text) || data.snipTarget.lastKnownText || '';
-      
-      const updatedData = {
-        text: textToKeep,
-        lastUpdated: timeStr,
-        lastUpdatedTimestamp: Date.now()
-      };
-
-      await chrome.storage.local.set({ snipData: updatedData });
-
-      chrome.runtime.sendMessage({
-        action: 'SNIP_DATA_UPDATED',
-        data: updatedData
-      }).catch(() => {});
-
-      return { status: 'ok', data: updatedData };
-    }
-  } catch (err) {
-    console.error('Background fetch failed:', err);
-    return { status: 'error', message: err.message };
-  }
-}
-
-// Robust HTML extractor for background service worker
-function extractTextFromHtml(html, selector) {
-  if (!selector) return null;
-
-  // 1. If selector has an ID
-  const idMatch = selector.match(/#([a-zA-Z0-9_\-]+)/);
-  if (idMatch) {
-    const id = idMatch[1];
-    const regex = new RegExp(`<[^>]*id=["']${id}["'][^>]*>([\\s\\S]*?)<\\/`, 'i');
-    const m = html.match(regex);
-    if (m && m[1]) return cleanHtmlTags(m[1]);
-  }
-
-  // 2. If selector has data-testid
-  const testIdMatch = selector.match(/\[data-testid=["']([^"']+)["']\]/);
-  if (testIdMatch) {
-    const val = testIdMatch[1];
-    const regex = new RegExp(`<[^>]*data-testid=["']${val}["'][^>]*>([\\s\\S]*?)<\\/`, 'i');
-    const m = html.match(regex);
-    if (m && m[1]) return cleanHtmlTags(m[1]);
-  }
-
-  // 3. Class match
-  const classMatches = selector.match(/\.([a-zA-Z0-9_\-]+)/g);
-  if (classMatches && classMatches.length > 0) {
-    const targetClass = classMatches[classMatches.length - 1].replace('.', '');
-    const regex = new RegExp(`<[^>]*class=["'][^"']*\\b${targetClass}\\b[^"']*["'][^>]*>([\\s\\S]*?)<\\/`, 'i');
-    const m = html.match(regex);
-    if (m && m[1]) return cleanHtmlTags(m[1]);
-  }
-
-  return null;
-}
-
-function cleanHtmlTags(str) {
-  return str
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, ' ')
-    .trim();
-}
