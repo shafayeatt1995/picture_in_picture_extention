@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live Snip</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app-card">
+    <!-- Top Header -->
+    <div class="app-header">
+      <div class="brand">
+        <span class="live-indicator"></span>
+        <span class="app-title">Live Snip</span>
+      </div>
+      <div class="header-actions">
+        <button id="floatingPipBtn" class="icon-btn" title="Open in Always-on-Top Floating Window">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+            <line x1="8" y1="21" x2="16" y2="21"></line>
+            <line x1="12" y1="17" x2="12" y2="21"></line>
+            <rect x="12" y="9" width="8" height="6" rx="1" fill="currentColor" opacity="0.3"></rect>
+          </svg>
+        </button>
+        <button id="selectElementBtn" class="icon-btn icon-btn-select" title="Select Section on Page">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"></path>
+            <path d="M13 13l6 6"></path>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Main Content Area: Selected Text Display -->
+    <div class="content-box">
+      <div class="content-header">
+        <span class="content-label" id="sourceDomain">Selected Content</span>
+        <button id="manualRefreshBtn" class="refresh-btn" title="Refresh Now">
+          <svg id="refreshIcon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+          </svg>
+          <span class="refresh-text">Refresh</span>
+        </button>
+      </div>
+
+      <div id="snipDisplay" class="snip-text-container">
+        <div class="placeholder-text">
+          No section selected yet.<br>Click <strong>"Select Section"</strong> to pick text from any page.
+        </div>
+      </div>
+
+      <div class="meta-footer">
+        <span id="lastUpdatedTime" class="meta-item">Updated: --</span>
+        <span id="tabStatusNote" class="meta-tag">Works with tab closed</span>
+      </div>
+    </div>
+
+    <!-- PiP Window Mode Selector -->
+    <div class="mode-section">
+      <div class="mode-row">
+        <label for="pipModeSelect" class="mode-label">Floating Window Mode</label>
+        <select id="pipModeSelect" class="mode-select">
+          <option value="video" selected>Frameless PiP (YouTube style, No bar)</option>
+          <option value="document">Interactive HTML PiP (With title bar)</option>
+        </select>
+      </div>
+      <p class="mode-desc" id="modeDescText">Clean video stream without title bar. Hover shows ✕.</p>
+    </div>
+
+    <!-- Timer Control Section -->
+    <div class="timer-section">
+      <div class="timer-row">
+        <label for="refreshMinutes" class="timer-label">Auto-refresh every</label>
+        <div class="timer-input-wrapper">
+          <input type="number" id="refreshMinutes" min="0" max="1440" step="any" value="10" placeholder="10">
+          <span class="timer-unit">min</span>
+        </div>
+      </div>
+      <div class="chips-row">
+        <button type="button" class="chip" data-min="1">1m</button>
+        <button type="button" class="chip" data-min="5">5m</button>
+        <button type="button" class="chip active" data-min="10">10m</button>
+        <button type="button" class="chip" data-min="30">30m</button>
+        <button type="button" class="chip" data-min="0">Off</button>
+      </div>
+    </div>
+
+    <div id="statusToast" class="toast hidden"></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

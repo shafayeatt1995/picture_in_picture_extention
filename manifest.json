@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Web Snip PiP - Always On Top Widget",
+  "version": "1.0",
+  "description": "Select any webpage section, pop it into a Picture-in-Picture floating window (Always-on-Top) with auto-refresh timer.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "alarms"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Web Snip PiP"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
