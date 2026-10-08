@@ -1,4 +1,6 @@
-// Content Script: Handles interactive element picking and Picture-in-Picture window management
+// Content Script: Dual-Engine Picture-in-Picture
+// 1. Frameless Video PiP (YouTube style, no title bar, clean text canvas)
+// 2. Interactive Document PiP (HTML elements, with domain title bar)
 
 (function() {
   if (window.__webSnipPipInitialized) return;
@@ -9,13 +11,22 @@
   let currentOverlay = null;
   let pipWindow = null;
   let refreshTimerId = null;
+  let renderAnimationId = null;
   let lastSelectedSelector = null;
   let chosenRefreshIntervalMinutes = 10;
+  let chosenPipMode = 'video'; // 'video' (frameless) or 'document' (html)
+
+  // Video PiP variables
+  let pipVideo = null;
+  let pipCanvas = null;
+  let pipCtx = null;
+  let selectedTargetElement = null;
 
   // Listen for messages from popup or background
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'START_ELEMENT_PICKER') {
       chosenRefreshIntervalMinutes = request.refreshIntervalMinutes || 10;
+      chosenPipMode = request.pipMode || 'video';
       startElementPicker();
       sendResponse({ status: 'ok' });
     } else if (request.action === 'CLOSE_PIP') {
@@ -24,7 +35,7 @@
     } else if (request.action === 'TRIGGER_PIP_FROM_POPUP') {
       if (lastSelectedSelector) {
         const el = document.querySelector(lastSelectedSelector);
-        if (el) openDocumentPip(el, lastSelectedSelector);
+        if (el) openSelectedPiP(el, lastSelectedSelector);
       }
       sendResponse({ status: 'ok' });
     }
@@ -38,13 +49,15 @@
       const parsed = JSON.parse(savedPipInfo);
       chosenRefreshIntervalMinutes = parsed.intervalMinutes;
       lastSelectedSelector = parsed.selector;
+      chosenPipMode = parsed.pipMode || 'video';
       sessionStorage.removeItem('__webSnipPip_active');
 
       // Wait for DOM ready, then reopen PiP window
       window.addEventListener('load', () => {
         setTimeout(() => {
-          reopenPipAfterReload(lastSelectedSelector);
-        }, 600);
+          const el = document.querySelector(lastSelectedSelector);
+          if (el) openSelectedPiP(el, lastSelectedSelector);
+        }, 700);
       });
     } catch (e) {
       console.error(e);
@@ -55,9 +68,10 @@
     if (currentOverlay) return;
     currentOverlay = document.createElement('div');
     currentOverlay.id = '__web_snip_pip_hover_box';
+    const modeBadge = chosenPipMode === 'video' ? 'YouTube Frameless PiP' : 'Interactive Window';
     currentOverlay.innerHTML = `
       <div id="__web_snip_pip_tooltip">
-        <span>Click to open in Always-On-Top Floating Window</span>
+        <span>Click to open in <strong>${modeBadge}</strong></span>
         <kbd>Esc to cancel</kbd>
       </div>
     `;
@@ -134,8 +148,8 @@
         }
       });
 
-      // Also open the Document PiP window
-      openDocumentPip(selected, selector);
+      // Open in chosen mode
+      openSelectedPiP(selected, selector);
     }
   }
 
@@ -175,9 +189,149 @@
     return parts.join(' > ');
   }
 
+  function openSelectedPiP(element, selector) {
+    if (chosenPipMode === 'document') {
+      openDocumentPip(element, selector);
+    } else {
+      openVideoPip(element, selector);
+    }
+  }
+
+  // ==========================================
+  // Option 1: YouTube-Style Video PiP (No Bar)
+  // ==========================================
+  async function openVideoPip(element, selector) {
+    selectedTargetElement = element;
+
+    try {
+      if (pipWindow) {
+        try { pipWindow.close(); } catch (e) {}
+        pipWindow = null;
+      }
+
+      setupCanvasAndVideo(element);
+      renderElementToCanvas();
+
+      await pipVideo.play();
+      await pipVideo.requestPictureInPicture();
+
+      startRefreshTimer(selector);
+    } catch (err) {
+      console.warn('Video PiP failed, falling back to Document PiP:', err);
+      openDocumentPip(element, selector);
+    }
+  }
+
+  function setupCanvasAndVideo(element) {
+    const rect = element.getBoundingClientRect();
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const width = Math.max(340, Math.round(rect.width));
+    const height = Math.max(180, Math.round(rect.height));
+
+    if (!pipCanvas) {
+      pipCanvas = document.createElement('canvas');
+      pipCanvas.style.display = 'none';
+      document.body.appendChild(pipCanvas);
+    }
+    pipCanvas.width = width * dpr;
+    pipCanvas.height = height * dpr;
+    pipCtx = pipCanvas.getContext('2d');
+    pipCtx.scale(dpr, dpr);
+
+    if (!pipVideo) {
+      pipVideo = document.createElement('video');
+      pipVideo.muted = true;
+      pipVideo.playsInline = true;
+      pipVideo.style.display = 'none';
+      document.body.appendChild(pipVideo);
+
+      pipVideo.addEventListener('leavepictureinpicture', () => {
+        closePip();
+      });
+    }
+
+    const stream = pipCanvas.captureStream(25);
+    pipVideo.srcObject = stream;
+  }
+
+  function renderElementToCanvas() {
+    if (!selectedTargetElement || !pipCanvas || !pipCtx) return;
+
+    const width = pipCanvas.width / (window.devicePixelRatio || 1);
+    const height = pipCanvas.height / (window.devicePixelRatio || 1);
+
+    const computedStyle = window.getComputedStyle(selectedTargetElement);
+    const bgColor = computedStyle.backgroundColor !== 'rgba(0, 0, 0, 0)' && computedStyle.backgroundColor !== 'transparent'
+      ? computedStyle.backgroundColor 
+      : '#090d16';
+
+    // Clear background
+    pipCtx.fillStyle = bgColor;
+    pipCtx.fillRect(0, 0, width, height);
+
+    // Draw card border
+    pipCtx.strokeStyle = '#1e293b';
+    pipCtx.lineWidth = 2;
+    pipCtx.strokeRect(1, 1, width - 2, height - 2);
+
+    // Render formatted text
+    const textContent = (selectedTargetElement.innerText || selectedTargetElement.textContent || '').trim();
+    drawContentOnCanvas(pipCtx, textContent, width, height, computedStyle);
+
+    if (document.pictureInPictureElement === pipVideo) {
+      renderAnimationId = requestAnimationFrame(renderElementToCanvas);
+    }
+  }
+
+  function drawContentOnCanvas(ctx, text, width, height, computedStyle) {
+    const textColor = computedStyle.color && computedStyle.color !== 'rgba(0, 0, 0, 0)' ? computedStyle.color : '#f1f5f9';
+    ctx.fillStyle = textColor;
+    ctx.textBaseline = 'top';
+
+    const fontSize = Math.max(15, Math.min(24, Math.round(width / 22)));
+    ctx.font = `600 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+
+    const padding = 16;
+    const maxWidth = width - (padding * 2);
+    const lineHeight = fontSize * 1.45;
+
+    const lines = text.split('\n').filter(l => l.trim().length > 0);
+    let currentY = padding;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      currentY = wrapAndDrawText(ctx, line, padding, currentY, maxWidth, lineHeight, height - padding);
+      currentY += 4;
+      if (currentY > height - padding) break;
+    }
+  }
+
+  function wrapAndDrawText(ctx, text, x, y, maxWidth, lineHeight, maxY) {
+    const words = text.split(' ');
+    let line = '';
+
+    for (let n = 0; n < words.length; n++) {
+      const testLine = line + words[n] + ' ';
+      const metrics = ctx.measureText(testLine);
+      if (metrics.width > maxWidth && n > 0) {
+        if (y < maxY) ctx.fillText(line, x, y);
+        line = words[n] + ' ';
+        y += lineHeight;
+      } else {
+        line = testLine;
+      }
+    }
+    if (y < maxY) ctx.fillText(line, x, y);
+    return y + lineHeight;
+  }
+
+  // ==========================================
+  // Option 2: Interactive Document HTML PiP
+  // ==========================================
   async function openDocumentPip(element, selector) {
     if (!('documentPictureInPicture' in window)) {
-      alert('Document Picture-in-Picture is not supported in this Chrome version. Please update Chrome to version 116 or higher.');
+      // Fallback to video PiP if document PiP is not supported
+      openVideoPip(element, selector);
       return;
     }
 
@@ -190,7 +344,6 @@
         try { pipWindow.close(); } catch (e) {}
       }
 
-      // Request always-on-top Document PiP window
       pipWindow = await window.documentPictureInPicture.requestWindow({
         width: initialWidth,
         height: initialHeight
@@ -199,22 +352,14 @@
       setupPipWindowContent(pipWindow, element, selector);
 
     } catch (err) {
-      console.error('Failed to open Document PiP window:', err);
-      alert('Could not open Picture-in-Picture: ' + err.message);
-    }
-  }
-
-  function reopenPipAfterReload(selector) {
-    const el = document.querySelector(selector);
-    if (el) {
-      openDocumentPip(el, selector);
+      console.warn('Document PiP failed, trying Video PiP:', err);
+      openVideoPip(element, selector);
     }
   }
 
   function setupPipWindowContent(pipWin, sourceElement, selector) {
     const pipDoc = pipWin.document;
 
-    // Copy all stylesheets from host document to PiP window
     Array.from(document.styleSheets).forEach(sheet => {
       try {
         if (sheet.href) {
@@ -230,7 +375,6 @@
           pipDoc.head.appendChild(style);
         }
       } catch (err) {
-        // Cross-origin stylesheet access fallback
         if (sheet.href) {
           const link = pipDoc.createElement('link');
           link.rel = 'stylesheet';
@@ -240,7 +384,6 @@
       }
     });
 
-    // Add dedicated helper styling for the PiP window toolbar & container
     const extraStyle = pipDoc.createElement('style');
     extraStyle.textContent = `
       body {
@@ -263,27 +406,21 @@
     `;
     pipDoc.head.appendChild(extraStyle);
 
-    // Cloned section container
     const container = pipDoc.createElement('div');
     container.id = '__pip_container';
 
-    // Clone the selected section DOM
     const clonedNode = sourceElement.cloneNode(true);
     container.appendChild(clonedNode);
-
     pipDoc.body.appendChild(container);
 
-    // Handle auto refresh countdown and reload in background
     startRefreshTimer(selector);
 
-    // Cleanup when PiP window is closed by user
     pipWin.addEventListener('pagehide', () => {
       clearInterval(refreshTimerId);
       sessionStorage.removeItem('__webSnipPip_active');
       pipWindow = null;
     });
 
-    // Keep cloned node in sync with live element DOM mutations if on the same page
     setupLiveDomObserver(sourceElement, clonedNode);
   }
 
@@ -300,9 +437,7 @@
           container.innerHTML = '';
           container.appendChild(sourceElement.cloneNode(true));
         }
-      } catch (e) {
-        // Window might be navigating
-      }
+      } catch (e) {}
     });
 
     observer.observe(sourceElement, {
@@ -313,6 +448,9 @@
     });
   }
 
+  // ==========================================
+  // Timer & Refresh Handling
+  // ==========================================
   function startRefreshTimer(selector) {
     clearInterval(refreshTimerId);
     if (!chosenRefreshIntervalMinutes || chosenRefreshIntervalMinutes <= 0) return;
@@ -329,21 +467,25 @@
   }
 
   function triggerPageRefresh(selector) {
-    // Store active PiP info in sessionStorage so it can be restored on reload
     sessionStorage.setItem('__webSnipPip_active', JSON.stringify({
       selector: selector,
-      intervalMinutes: chosenRefreshIntervalMinutes
+      intervalMinutes: chosenRefreshIntervalMinutes,
+      pipMode: chosenPipMode
     }));
 
-    // Reload the host webpage
     window.location.reload();
   }
 
   function closePip() {
+    if (document.pictureInPictureElement) {
+      document.exitPictureInPicture().catch(() => {});
+    }
+    if (renderAnimationId) {
+      cancelAnimationFrame(renderAnimationId);
+      renderAnimationId = null;
+    }
     if (pipWindow) {
-      try {
-        pipWindow.close();
-      } catch (e) {}
+      try { pipWindow.close(); } catch (e) {}
       pipWindow = null;
     }
     clearInterval(refreshTimerId);
